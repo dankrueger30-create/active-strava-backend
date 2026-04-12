@@ -45,6 +45,7 @@ app.post("/strava/exchange", async (req, res) => {
     params.append("client_secret", STRAVA_CLIENT_SECRET);
     params.append("code", code);
     params.append("grant_type", "authorization_code");
+    params.append("redirect_uri", "https://active-strava-backend.onrender.com/strava/callback");
 
     const response = await fetch("https://www.strava.com/oauth/token", {
       method: "POST",
