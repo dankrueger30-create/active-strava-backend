@@ -122,6 +122,13 @@ app.post("/strava/activities", async (req, res) => {
 
     const response = await fetch(
       "https://www.strava.com/api/v3/athlete/activities?per_page=20",
+
+      console.log("EXCHANGE DEBUG", {
+  clientId: STRAVA_CLIENT_ID,
+  hasClientSecret: !!STRAVA_CLIENT_SECRET,
+  redirectUri: RENDER_REDIRECT_URI,
+  codePresent: !!code
+});
       {
         method: "GET",
         headers: {
@@ -134,12 +141,15 @@ app.post("/strava/activities", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      return res.status(response.status).json({
-        ok: false,
-        error: data.message || "Aktivitäten konnten nicht geladen werden",
-        details: data
-      });
-    }
+  console.log("STRAVA EXCHANGE ERROR STATUS:", response.status);
+  console.log("STRAVA EXCHANGE ERROR DATA:", JSON.stringify(data, null, 2));
+
+  return res.status(response.status).json({
+    ok: false,
+    error: data.message || "Strava Exchange fehlgeschlagen",
+    details: data
+  });
+}
 
     const activityList = Array.isArray(data) ? data : [];
 
@@ -177,6 +187,10 @@ app.post("/strava/activities", async (req, res) => {
     });
   }
 });
+
+console.log("CLIENT_ID vorhanden:", !!STRAVA_CLIENT_ID);
+console.log("CLIENT_SECRET vorhanden:", !!STRAVA_CLIENT_SECRET);
+console.log("REDIRECT_URI:", RENDER_REDIRECT_URI);
 
 app.listen(PORT, () => {
   console.log("Server läuft auf Port " + PORT);
