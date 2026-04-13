@@ -6,10 +6,13 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// HIER DEINE ECHTEN DATEN EINTRAGEN:
-const STRAVA_CLIENT_ID = "223394";
-const STRAVA_CLIENT_SECRET = "527e504e8951b9fa847c125524b54e7f88174896";
+// Am besten später aus .env laden
+const STRAVA_CLIENT_ID = process.env.STRAVA_CLIENT_ID || "223394";
+const STRAVA_CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET || "";
 const APP_REDIRECT_SCHEME = "active://strava";
+const RENDER_REDIRECT_URI =
+  process.env.STRAVA_REDIRECT_URI ||
+  "https://active-strava-backend.onrender.com/strava/callback";
 
 app.get("/", (req, res) => {
   res.send("ACTIVE Backend läuft");
@@ -45,7 +48,7 @@ app.post("/strava/exchange", async (req, res) => {
     params.append("client_secret", STRAVA_CLIENT_SECRET);
     params.append("code", code);
     params.append("grant_type", "authorization_code");
-    params.append("redirect_uri", "https://active-strava-backend.onrender.com/strava/callback");
+    params.append("redirect_uri", RENDER_REDIRECT_URI);
 
     const response = await fetch("https://www.strava.com/oauth/token", {
       method: "POST",
@@ -82,6 +85,30 @@ app.post("/strava/exchange", async (req, res) => {
   }
 });
 
+async function fetchActivityDetail(activityId, accessToken) {
+  try {
+    const response = await fetch(
+      `https://www.strava.com/api/v3/activities/${activityId}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json"
+        }
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
 app.post("/strava/activities", async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -114,8 +141,18 @@ app.post("/strava/activities", async (req, res) => {
       });
     }
 
-    const activities = Array.isArray(data)
-      ? data.map((activity) => ({
+    const activityList = Array.isArray(data) ? data : [];
+
+    const activities = await Promise.all(
+      activityList.map(async (activity) => {
+        const detail = await fetchActivityDetail(activity.id, accessToken);
+
+        const summaryPolyline =
+          detail?.map?.summary_polyline ||
+          activity?.map?.summary_polyline ||
+          "";
+
+        return {
           id: activity.id ?? 0,
           name: activity.name || "",
           sportType: activity.sport_type || activity.type || "Aktivität",
@@ -123,9 +160,11 @@ app.post("/strava/activities", async (req, res) => {
           movingTimeSeconds: activity.moving_time || 0,
           elevationMeters: activity.total_elevation_gain || 0,
           calories: activity.calories || 0,
-          startDate: activity.start_date || ""
-        }))
-      : [];
+          startDate: activity.start_date || "",
+          routePolyline: summaryPolyline
+        };
+      })
+    );
 
     return res.json({
       ok: true,
