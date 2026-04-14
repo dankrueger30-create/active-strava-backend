@@ -6,7 +6,6 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// Am besten später aus .env laden
 const STRAVA_CLIENT_ID = process.env.STRAVA_CLIENT_ID || "223394";
 const STRAVA_CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET || "";
 const APP_REDIRECT_SCHEME = "active://strava";
@@ -119,6 +118,22 @@ async function fetchActivityDetail(activityId, accessToken) {
   }
 }
 
+function extractStartLatLng(activity, detail) {
+  const fromDetail = detail?.start_latlng;
+  const fromActivity = activity?.start_latlng;
+
+  const latlng = Array.isArray(fromDetail) && fromDetail.length >= 2
+    ? fromDetail
+    : Array.isArray(fromActivity) && fromActivity.length >= 2
+      ? fromActivity
+      : null;
+
+  return {
+    startLatitude: latlng?.[0] ?? 0,
+    startLongitude: latlng?.[1] ?? 0
+  };
+}
+
 app.post("/strava/activities", async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -165,6 +180,8 @@ app.post("/strava/activities", async (req, res) => {
           activity?.map?.summary_polyline ||
           "";
 
+        const { startLatitude, startLongitude } = extractStartLatLng(activity, detail);
+
         return {
           id: activity.id ?? 0,
           name: activity.name || "",
@@ -174,7 +191,9 @@ app.post("/strava/activities", async (req, res) => {
           elevationMeters: activity.total_elevation_gain || 0,
           calories: activity.calories || 0,
           startDate: activity.start_date || "",
-          routePolyline: summaryPolyline
+          routePolyline: summaryPolyline,
+          startLatitude,
+          startLongitude
         };
       })
     );
