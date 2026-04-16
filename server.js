@@ -1,292 +1,39 @@
-require("dotenv").config();
-const express = require("express");
+import express from "express";
+import cors from "cors";
 
 const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-
-const STRAVA_CLIENT_ID = process.env.STRAVA_CLIENT_ID || "223394";
-const STRAVA_CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET || "";
-const APP_REDIRECT_SCHEME = "active://strava";
-const RENDER_REDIRECT_URI =
-  process.env.STRAVA_REDIRECT_URI ||
-  "https://active-strava-backend.onrender.com/strava/callback";
-
-const APP_USER_AGENT =
-  process.env.APP_USER_AGENT ||
-  "ACTIVE/1.0 (contact: dan.krueger30@gmail.com)";
-
-const reverseGeoCache = new Map();
-let lastNominatimRequestAt = 0;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForNominatimSlot() {
-  const now = Date.now();
-  const diff = now - lastNominatimRequestAt;
-
-  if (diff < 1000) {
-    await sleep(1000 - diff);
-  }
-
-  lastNominatimRequestAt = Date.now();
-}
-
-app.get("/", (req, res) => {
-  res.send("ACTIVE Backend läuft");
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    message: "ACTIVE Strava Backend läuft"
+  });
 });
 
-app.get("/strava/callback", (req, res) => {
-  const { code, error } = req.query;
-
-  if (error) {
-    return res.redirect(`${APP_REDIRECT_SCHEME}?error=${encodeURIComponent(error)}`);
-  }
-
-  if (!code) {
-    return res.redirect(`${APP_REDIRECT_SCHEME}?error=missing_code`);
-  }
-
-  return res.redirect(`${APP_REDIRECT_SCHEME}?code=${encodeURIComponent(code)}`);
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    uptime: process.uptime()
+  });
 });
-
-app.post("/strava/exchange", async (req, res) => {
-  try {
-    const { code } = req.body;
-
-    if (!code) {
-      return res.status(400).json({
-        ok: false,
-        error: "Code fehlt"
-      });
-    }
-
-    const params = new URLSearchParams();
-    params.append("client_id", STRAVA_CLIENT_ID);
-    params.append("client_secret", STRAVA_CLIENT_SECRET);
-    params.append("code", code);
-    params.append("grant_type", "authorization_code");
-    params.append("redirect_uri", RENDER_REDIRECT_URI);
-
-    const response = await fetch("https://www.strava.com/oauth/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json"
-      },
-      body: params.toString()
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.log("STRAVA EXCHANGE ERROR STATUS:", response.status);
-      console.log("STRAVA EXCHANGE ERROR DATA:", JSON.stringify(data, null, 2));
-
-      return res.status(response.status).json({
-        ok: false,
-        error: data.message || "Strava Exchange fehlgeschlagen",
-        details: data
-      });
-    }
-
-    return res.json({
-      ok: true,
-      athleteId: data.athlete?.id ?? null,
-      athleteName: `${data.athlete?.firstname ?? ""} ${data.athlete?.lastname ?? ""}`.trim(),
-      accessToken: data.access_token ?? "",
-      refreshToken: data.refresh_token ?? "",
-      expiresAt: data.expires_at ?? 0
-    });
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      error: e.message || "Serverfehler"
-    });
-  }
-});
-
-async function fetchActivityDetail(activityId, accessToken) {
-  try {
-    const response = await fetch(
-      `https://www.strava.com/api/v3/activities/${activityId}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: "application/json"
-        }
-      }
-    );
-
-    if (!response.ok) {
-      console.log("DETAIL ERROR", {
-        activityId,
-        status: response.status
-      });
-      return null;
-    }
-
-    return await response.json();
-  } catch (e) {
-    console.log("DETAIL FETCH ERROR", {
-      activityId,
-      error: e.message || e
-    });
-    return null;
-  }
-}
-
-function extractStartLatLng(activity, detail) {
-  const fromDetail = detail?.start_latlng;
-  const fromActivity = activity?.start_latlng;
-
-  const latlng =
-    Array.isArray(fromDetail) && fromDetail.length >= 2
-      ? fromDetail
-      : Array.isArray(fromActivity) && fromActivity.length >= 2
-        ? fromActivity
-        : null;
-
-  return {
-    startLatitude: latlng?.[0] ?? 0,
-    startLongitude: latlng?.[1] ?? 0
-  };
-}
-
-function buildLocationNameFromStrava(activity, detail) {
-  const city =
-    detail?.location_city ||
-    activity?.location_city ||
-    "";
-
-  const state =
-    detail?.location_state ||
-    activity?.location_state ||
-    "";
-
-  const country =
-    detail?.location_country ||
-    activity?.location_country ||
-    "";
-
-  const parts = [city, state, country]
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter((value) => value.length > 0);
-
-  return parts.join(", ");
-}
-
-function hasValidCoordinates(lat, lon) {
-  return Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0);
-}
-
-function buildLocationNameFromAddress(address = {}) {
-  const city =
-    address.city ||
-    address.town ||
-    address.village ||
-    address.municipality ||
-    address.hamlet ||
-    address.suburb ||
-    address.city_district ||
-    "";
-
-  const region =
-    address.state ||
-    address.region ||
-    address.county ||
-    address.state_district ||
-    "";
-
-  const country = address.country || "";
-
-  const parts = [city, region, country]
-    .map((value) => (typeof value === "string" ? value.trim() : ""))
-    .filter((value) => value.length > 0);
-
-  return parts.join(", ");
-}
-
-async function reverseGeocodeLocation(lat, lon) {
-  if (!hasValidCoordinates(lat, lon)) {
-    return "";
-  }
-
-  const cacheKey = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-
-  if (reverseGeoCache.has(cacheKey)) {
-    return reverseGeoCache.get(cacheKey);
-  }
-
-  await waitForNominatimSlot();
-
-  try {
-    const url =
-      `https://nominatim.openstreetmap.org/reverse` +
-      `?format=jsonv2` +
-      `&lat=${encodeURIComponent(lat)}` +
-      `&lon=${encodeURIComponent(lon)}` +
-      `&addressdetails=1` +
-      `&zoom=10` +
-      `&accept-language=de` +
-      `&email=${encodeURIComponent("dan.krueger30@gmail.com")}`;
-
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        "User-Agent": APP_USER_AGENT
-      }
-    });
-
-    if (!response.ok) {
-      console.log("NOMINATIM ERROR STATUS:", response.status);
-      reverseGeoCache.set(cacheKey, "");
-      return "";
-    }
-
-    const data = await response.json();
-
-    console.log("NOMINATIM RAW RESPONSE", {
-      cacheKey,
-      display_name: data?.display_name || "",
-      address: data?.address || null
-    });
-
-    const locationName = buildLocationNameFromAddress(data?.address || {});
-
-    reverseGeoCache.set(cacheKey, locationName);
-
-    console.log("NOMINATIM FINAL NAME", {
-      cacheKey,
-      locationName
-    });
-
-    return locationName;
-  } catch (e) {
-    console.log("NOMINATIM ERROR:", e.message || e);
-    reverseGeoCache.set(cacheKey, "");
-    return "";
-  }
-}
 
 app.post("/strava/activities", async (req, res) => {
   try {
-    const { accessToken } = req.body;
+    const accessToken = req.body?.accessToken;
 
     if (!accessToken) {
       return res.status(400).json({
         ok: false,
-        error: "Access Token fehlt"
+        error: "accessToken fehlt"
       });
     }
 
-    const response = await fetch(
-      "https://www.strava.com/api/v3/athlete/activities?per_page=5",
+    const stravaResponse = await fetch(
+      "https://www.strava.com/api/v3/athlete/activities?per_page=30&page=1",
       {
         method: "GET",
         headers: {
@@ -296,99 +43,130 @@ app.post("/strava/activities", async (req, res) => {
       }
     );
 
-    const data = await response.json();
+    const rawText = await stravaResponse.text();
 
-    if (!response.ok) {
-      console.log("STRAVA ACTIVITIES ERROR STATUS:", response.status);
-      console.log("STRAVA ACTIVITIES ERROR DATA:", JSON.stringify(data, null, 2));
+    if (!stravaResponse.ok) {
+      console.error("STRAVA ERROR:", stravaResponse.status, rawText);
 
-      return res.status(response.status).json({
+      return res.status(stravaResponse.status).json({
         ok: false,
-        error: data.message || "Aktivitäten konnten nicht geladen werden",
-        details: data
+        error: "Strava API Fehler",
+        status: stravaResponse.status,
+        body: rawText
       });
     }
 
-    const activityList = Array.isArray(data) ? data : [];
-    const activities = [];
+    const activities = JSON.parse(rawText);
 
-    for (const activity of activityList) {
-      const detail = await fetchActivityDetail(activity.id, accessToken);
+    const mapped = activities.map((activity) => {
+      const startLatLng = Array.isArray(activity.start_latlng)
+        ? activity.start_latlng
+        : null;
 
-      const summaryPolyline =
-        detail?.map?.summary_polyline ||
-        activity?.map?.summary_polyline ||
-        "";
+      const endLatLng = Array.isArray(activity.end_latlng)
+        ? activity.end_latlng
+        : null;
 
-      const { startLatitude, startLongitude } = extractStartLatLng(activity, detail);
+      const startLatitude =
+        startLatLng && typeof startLatLng[0] === "number" ? startLatLng[0] : 0;
 
-      let locationName = buildLocationNameFromStrava(activity, detail);
+      const startLongitude =
+        startLatLng && typeof startLatLng[1] === "number" ? startLatLng[1] : 0;
+
+      const endLatitude =
+        endLatLng && typeof endLatLng[0] === "number" ? endLatLng[0] : 0;
+
+      const endLongitude =
+        endLatLng && typeof endLatLng[1] === "number" ? endLatLng[1] : 0;
+
+      const routePolyline =
+        activity.map && typeof activity.map.summary_polyline === "string"
+          ? activity.map.summary_polyline
+          : "";
+
+      const sportType =
+        activity.sport_type ||
+        activity.type ||
+        "Aktivität";
+
+      const elevationMeters =
+        typeof activity.total_elevation_gain === "number"
+          ? activity.total_elevation_gain
+          : 0;
+
+      const calories =
+        typeof activity.kilojoules === "number"
+          ? Math.round(activity.kilojoules)
+          : 0;
+
+      const activityCity = activity.location_city || "";
+      const activityState = activity.location_state || "";
+      const activityCountry = activity.location_country || "";
+
+      const locationName = [activityCity, activityState, activityCountry]
+        .filter(Boolean)
+        .join(", ");
 
       console.log("LOCATION DEBUG RAW", {
         id: activity.id,
-        name: activity.name || "",
-        activity_city: activity?.location_city || "",
-        activity_state: activity?.location_state || "",
-        activity_country: activity?.location_country || "",
-        detail_city: detail?.location_city || "",
-        detail_state: detail?.location_state || "",
-        detail_country: detail?.location_country || "",
+        name: activity.name,
+        activity_city: activityCity,
+        activity_state: activityState,
+        activity_country: activityCountry,
         startLatitude,
         startLongitude
       });
 
-      if (!locationName && hasValidCoordinates(startLatitude, startLongitude)) {
-        locationName = await reverseGeocodeLocation(startLatitude, startLongitude);
-      }
-
       console.log("LOCATION DEBUG FINAL", {
         id: activity.id,
-        name: activity.name || "",
+        name: activity.name,
         locationName
       });
 
       console.log("FINAL LOCATION CHECK", {
         id: activity.id,
-        name: activity.name || "",
+        name: activity.name,
         startLatitude,
         startLongitude,
         locationName
       });
 
-      activities.push({
-        id: activity.id ?? 0,
+      return {
+        id: activity.id,
         name: activity.name || "",
-        sportType: activity.sport_type || activity.type || "Aktivität",
-        distanceMeters: activity.distance || 0,
-        movingTimeSeconds: activity.moving_time || 0,
-        elevationMeters: activity.total_elevation_gain || 0,
-        calories: activity.calories || 0,
+        sportType,
+        distanceMeters: typeof activity.distance === "number" ? activity.distance : 0,
+        movingTimeSeconds:
+          typeof activity.moving_time === "number" ? activity.moving_time : 0,
+        elevationMeters,
+        calories,
         startDate: activity.start_date || "",
-        routePolyline: summaryPolyline,
+        startDateLocal: activity.start_date_local || "",
+        routePolyline,
         startLatitude,
         startLongitude,
+        endLatitude,
+        endLongitude,
         locationName
-      });
-    }
+      };
+    });
 
     return res.json({
       ok: true,
-      activities
+      count: mapped.length,
+      activities: mapped
     });
-  } catch (e) {
-    console.log("SERVER ERROR /strava/activities:", e.message || e);
+  } catch (error) {
+    console.error("BACKEND ERROR:", error);
 
     return res.status(500).json({
       ok: false,
-      error: e.message || "Serverfehler"
+      error: "Interner Serverfehler",
+      details: error instanceof Error ? error.message : String(error)
     });
   }
 });
 
-console.log("CLIENT_ID vorhanden:", !!STRAVA_CLIENT_ID);
-console.log("CLIENT_SECRET vorhanden:", !!STRAVA_CLIENT_SECRET);
-console.log("REDIRECT_URI:", RENDER_REDIRECT_URI);
-
-app.listen(PORT, () => {
-  console.log("Server läuft auf Port " + PORT);
+app.listen(port, () => {
+  console.log(`ACTIVE backend läuft auf Port ${port}`);
 });
