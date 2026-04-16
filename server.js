@@ -13,15 +13,11 @@ const RENDER_REDIRECT_URI =
   process.env.STRAVA_REDIRECT_URI ||
   "https://active-strava-backend.onrender.com/strava/callback";
 
-// ✅ DEINE MAIL HIER DRIN
 const APP_USER_AGENT =
   process.env.APP_USER_AGENT ||
   "ACTIVE/1.0 (contact: dan.krueger30@gmail.com)";
 
-// Cache
 const reverseGeoCache = new Map();
-
-// 1 Request pro Sekunde
 let lastNominatimRequestAt = 0;
 
 function sleep(ms) {
@@ -43,9 +39,6 @@ app.get("/", (req, res) => {
   res.send("ACTIVE Backend läuft");
 });
 
-// ----------------------
-// STRAVA REDIRECT
-// ----------------------
 app.get("/strava/callback", (req, res) => {
   const { code, error } = req.query;
 
@@ -60,9 +53,6 @@ app.get("/strava/callback", (req, res) => {
   return res.redirect(`${APP_REDIRECT_SCHEME}?code=${encodeURIComponent(code)}`);
 });
 
-// ----------------------
-// TOKEN EXCHANGE
-// ----------------------
 app.post("/strava/exchange", async (req, res) => {
   try {
     const { code } = req.body;
@@ -93,9 +83,13 @@ app.post("/strava/exchange", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
+      console.log("STRAVA EXCHANGE ERROR STATUS:", response.status);
+      console.log("STRAVA EXCHANGE ERROR DATA:", JSON.stringify(data, null, 2));
+
       return res.status(response.status).json({
         ok: false,
-        error: data.message || "Strava Exchange fehlgeschlagen"
+        error: data.message || "Strava Exchange fehlgeschlagen",
+        details: data
       });
     }
 
@@ -115,9 +109,6 @@ app.post("/strava/exchange", async (req, res) => {
   }
 });
 
-// ----------------------
-// DETAIL FETCH
-// ----------------------
 async function fetchActivityDetail(activityId, accessToken) {
   try {
     const response = await fetch(
@@ -131,20 +122,34 @@ async function fetchActivityDetail(activityId, accessToken) {
       }
     );
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      console.log("DETAIL ERROR", {
+        activityId,
+        status: response.status
+      });
+      return null;
+    }
 
     return await response.json();
-  } catch {
+  } catch (e) {
+    console.log("DETAIL FETCH ERROR", {
+      activityId,
+      error: e.message || e
+    });
     return null;
   }
 }
 
-// ----------------------
-// KOORDINATEN
-// ----------------------
 function extractStartLatLng(activity, detail) {
+  const fromDetail = detail?.start_latlng;
+  const fromActivity = activity?.start_latlng;
+
   const latlng =
-    detail?.start_latlng || activity?.start_latlng || null;
+    Array.isArray(fromDetail) && fromDetail.length >= 2
+      ? fromDetail
+      : Array.isArray(fromActivity) && fromActivity.length >= 2
+        ? fromActivity
+        : null;
 
   return {
     startLatitude: latlng?.[0] ?? 0,
@@ -152,22 +157,31 @@ function extractStartLatLng(activity, detail) {
   };
 }
 
-// ----------------------
-// STRAVA ORT
-// ----------------------
 function buildLocationNameFromStrava(activity, detail) {
-  const city = detail?.location_city || activity?.location_city || "";
-  const state = detail?.location_state || activity?.location_state || "";
-  const country = detail?.location_country || activity?.location_country || "";
+  const city =
+    detail?.location_city ||
+    activity?.location_city ||
+    "";
 
-  return [city, state, country].filter(Boolean).join(", ");
+  const state =
+    detail?.location_state ||
+    activity?.location_state ||
+    "";
+
+  const country =
+    detail?.location_country ||
+    activity?.location_country ||
+    "";
+
+  const parts = [city, state, country]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+
+  return parts.join(", ");
 }
 
-// ----------------------
-// NOMINATIM
-// ----------------------
 function hasValidCoordinates(lat, lon) {
-  return lat !== 0 || lon !== 0;
+  return Number.isFinite(lat) && Number.isFinite(lon) && (lat !== 0 || lon !== 0);
 }
 
 function buildLocationNameFromAddress(address = {}) {
@@ -175,18 +189,35 @@ function buildLocationNameFromAddress(address = {}) {
     address.city ||
     address.town ||
     address.village ||
+    address.municipality ||
+    address.hamlet ||
+    address.suburb ||
+    address.city_district ||
     "";
 
-  const region = address.state || "";
+  const region =
+    address.state ||
+    address.region ||
+    address.county ||
+    address.state_district ||
+    "";
+
   const country = address.country || "";
 
-  return [city, region, country].filter(Boolean).join(", ");
+  const parts = [city, region, country]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+
+  return parts.join(", ");
 }
 
 async function reverseGeocodeLocation(lat, lon) {
-  if (!hasValidCoordinates(lat, lon)) return "";
+  if (!hasValidCoordinates(lat, lon)) {
+    return "";
+  }
 
   const cacheKey = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+
   if (reverseGeoCache.has(cacheKey)) {
     return reverseGeoCache.get(cacheKey);
   }
@@ -195,30 +226,54 @@ async function reverseGeocodeLocation(lat, lon) {
 
   try {
     const url =
-      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`;
+      `https://nominatim.openstreetmap.org/reverse` +
+      `?format=jsonv2` +
+      `&lat=${encodeURIComponent(lat)}` +
+      `&lon=${encodeURIComponent(lon)}` +
+      `&addressdetails=1` +
+      `&zoom=10` +
+      `&accept-language=de` +
+      `&email=${encodeURIComponent("dan.krueger30@gmail.com")}`;
 
     const response = await fetch(url, {
+      method: "GET",
       headers: {
+        Accept: "application/json",
         "User-Agent": APP_USER_AGENT
       }
     });
 
-    if (!response.ok) return "";
+    if (!response.ok) {
+      console.log("NOMINATIM ERROR STATUS:", response.status);
+      reverseGeoCache.set(cacheKey, "");
+      return "";
+    }
 
     const data = await response.json();
-    const name = buildLocationNameFromAddress(data.address);
 
-    reverseGeoCache.set(cacheKey, name);
+    console.log("NOMINATIM RAW RESPONSE", {
+      cacheKey,
+      display_name: data?.display_name || "",
+      address: data?.address || null
+    });
 
-    return name;
-  } catch {
+    const locationName = buildLocationNameFromAddress(data?.address || {});
+
+    reverseGeoCache.set(cacheKey, locationName);
+
+    console.log("NOMINATIM FINAL NAME", {
+      cacheKey,
+      locationName
+    });
+
+    return locationName;
+  } catch (e) {
+    console.log("NOMINATIM ERROR:", e.message || e);
+    reverseGeoCache.set(cacheKey, "");
     return "";
   }
 }
 
-// ----------------------
-// ACTIVITIES
-// ----------------------
 app.post("/strava/activities", async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -233,8 +288,10 @@ app.post("/strava/activities", async (req, res) => {
     const response = await fetch(
       "https://www.strava.com/api/v3/athlete/activities?per_page=5",
       {
+        method: "GET",
         headers: {
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json"
         }
       }
     );
@@ -242,62 +299,95 @@ app.post("/strava/activities", async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
+      console.log("STRAVA ACTIVITIES ERROR STATUS:", response.status);
+      console.log("STRAVA ACTIVITIES ERROR DATA:", JSON.stringify(data, null, 2));
+
       return res.status(response.status).json({
         ok: false,
-        error: "Strava Fehler"
+        error: data.message || "Aktivitäten konnten nicht geladen werden",
+        details: data
       });
     }
 
+    const activityList = Array.isArray(data) ? data : [];
     const activities = [];
 
-    for (const activity of data) {
+    for (const activity of activityList) {
       const detail = await fetchActivityDetail(activity.id, accessToken);
 
-      const { startLatitude, startLongitude } =
-        extractStartLatLng(activity, detail);
+      const summaryPolyline =
+        detail?.map?.summary_polyline ||
+        activity?.map?.summary_polyline ||
+        "";
 
-      let locationName =
-        buildLocationNameFromStrava(activity, detail);
+      const { startLatitude, startLongitude } = extractStartLatLng(activity, detail);
 
-      if (!locationName) {
-        locationName = await reverseGeocodeLocation(
-          startLatitude,
-          startLongitude
-        );
+      let locationName = buildLocationNameFromStrava(activity, detail);
+
+      console.log("LOCATION DEBUG RAW", {
+        id: activity.id,
+        name: activity.name || "",
+        activity_city: activity?.location_city || "",
+        activity_state: activity?.location_state || "",
+        activity_country: activity?.location_country || "",
+        detail_city: detail?.location_city || "",
+        detail_state: detail?.location_state || "",
+        detail_country: detail?.location_country || "",
+        startLatitude,
+        startLongitude
+      });
+
+      if (!locationName && hasValidCoordinates(startLatitude, startLongitude)) {
+        locationName = await reverseGeocodeLocation(startLatitude, startLongitude);
       }
+
+      console.log("LOCATION DEBUG FINAL", {
+        id: activity.id,
+        name: activity.name || "",
+        locationName
+      });
 
       console.log("FINAL LOCATION CHECK", {
         id: activity.id,
+        name: activity.name || "",
+        startLatitude,
+        startLongitude,
         locationName
       });
 
       activities.push({
-        id: activity.id,
-        name: activity.name,
-        sportType: activity.sport_type,
-        distanceMeters: activity.distance,
-        movingTimeSeconds: activity.moving_time,
-        elevationMeters: activity.total_elevation_gain,
+        id: activity.id ?? 0,
+        name: activity.name || "",
+        sportType: activity.sport_type || activity.type || "Aktivität",
+        distanceMeters: activity.distance || 0,
+        movingTimeSeconds: activity.moving_time || 0,
+        elevationMeters: activity.total_elevation_gain || 0,
         calories: activity.calories || 0,
-        startDate: activity.start_date,
-        routePolyline:
-          detail?.map?.summary_polyline ||
-          activity?.map?.summary_polyline ||
-          "",
+        startDate: activity.start_date || "",
+        routePolyline: summaryPolyline,
         startLatitude,
         startLongitude,
         locationName
       });
     }
 
-    res.json({ ok: true, activities });
+    return res.json({
+      ok: true,
+      activities
+    });
   } catch (e) {
-    res.status(500).json({
+    console.log("SERVER ERROR /strava/activities:", e.message || e);
+
+    return res.status(500).json({
       ok: false,
-      error: e.message
+      error: e.message || "Serverfehler"
     });
   }
 });
+
+console.log("CLIENT_ID vorhanden:", !!STRAVA_CLIENT_ID);
+console.log("CLIENT_SECRET vorhanden:", !!STRAVA_CLIENT_SECRET);
+console.log("REDIRECT_URI:", RENDER_REDIRECT_URI);
 
 app.listen(PORT, () => {
   console.log("Server läuft auf Port " + PORT);
