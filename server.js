@@ -134,6 +134,29 @@ function extractStartLatLng(activity, detail) {
   };
 }
 
+function buildLocationName(activity, detail) {
+  const city =
+    detail?.location_city ||
+    activity?.location_city ||
+    "";
+
+  const state =
+    detail?.location_state ||
+    activity?.location_state ||
+    "";
+
+  const country =
+    detail?.location_country ||
+    activity?.location_country ||
+    "";
+
+  const parts = [city, state, country]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+
+  return parts.join(", ");
+}
+
 app.post("/strava/activities", async (req, res) => {
   try {
     const { accessToken } = req.body;
@@ -180,7 +203,8 @@ app.post("/strava/activities", async (req, res) => {
           activity?.map?.summary_polyline ||
           "";
 
-        const { startLatitude, startLongitude } = extractStartLatLng(activity, detail);
+        const { startLatitude, startLongitude } = extractStartLatLng(activity, detail)
+        const locationName = buildLocationName(activity, detail)
 
         return {
           id: activity.id ?? 0,
@@ -193,7 +217,8 @@ app.post("/strava/activities", async (req, res) => {
           startDate: activity.start_date || "",
           routePolyline: summaryPolyline,
           startLatitude,
-          startLongitude
+          startLongitude,
+          locationName
         };
       })
     );
