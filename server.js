@@ -21,6 +21,74 @@ app.get("/health", (_req, res) => {
   });
 });
 
+
+// =============================
+// STRAVA OAUTH (NEU!)
+// =============================
+app.post("/strava/exchange", async (req, res) => {
+  try {
+    const code = req.body?.code;
+
+    if (!code) {
+      return res.status(400).json({
+        ok: false,
+        error: "code fehlt"
+      });
+    }
+
+    const params = new URLSearchParams();
+    params.append("client_id", process.env.STRAVA_CLIENT_ID);
+    params.append("client_secret", process.env.STRAVA_CLIENT_SECRET);
+    params.append("code", code);
+    params.append("grant_type", "authorization_code");
+
+    const stravaResponse = await fetch("https://www.strava.com/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+      },
+      body: params.toString()
+    });
+
+    const rawText = await stravaResponse.text();
+
+    if (!stravaResponse.ok) {
+      console.error("STRAVA EXCHANGE ERROR:", stravaResponse.status, rawText);
+
+      return res.status(stravaResponse.status).json({
+        ok: false,
+        error: "Strava Token Austausch fehlgeschlagen",
+        status: stravaResponse.status,
+        body: rawText
+      });
+    }
+
+    const data = JSON.parse(rawText);
+
+    return res.json({
+      ok: true,
+      access_token: data.access_token || "",
+      refresh_token: data.refresh_token || "",
+      expires_at: data.expires_at || 0,
+      athlete: data.athlete || {}
+    });
+
+  } catch (error) {
+    console.error("EXCHANGE BACKEND ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: "Interner Serverfehler",
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+
+// =============================
+// STRAVA ACTIVITIES
+// =============================
 app.post("/strava/activities", async (req, res) => {
   try {
     const accessToken = req.body?.accessToken;
@@ -107,22 +175,6 @@ app.post("/strava/activities", async (req, res) => {
         .filter(Boolean)
         .join(", ");
 
-      console.log("LOCATION DEBUG RAW", {
-        id: activity.id,
-        name: activity.name,
-        activity_city: activityCity,
-        activity_state: activityState,
-        activity_country: activityCountry,
-        startLatitude,
-        startLongitude
-      });
-
-      console.log("LOCATION DEBUG FINAL", {
-        id: activity.id,
-        name: activity.name,
-        locationName
-      });
-
       console.log("FINAL LOCATION CHECK", {
         id: activity.id,
         name: activity.name,
@@ -135,9 +187,8 @@ app.post("/strava/activities", async (req, res) => {
         id: activity.id,
         name: activity.name || "",
         sportType,
-        distanceMeters: typeof activity.distance === "number" ? activity.distance : 0,
-        movingTimeSeconds:
-          typeof activity.moving_time === "number" ? activity.moving_time : 0,
+        distanceMeters: activity.distance || 0,
+        movingTimeSeconds: activity.moving_time || 0,
         elevationMeters,
         calories,
         startDate: activity.start_date || "",
@@ -156,6 +207,7 @@ app.post("/strava/activities", async (req, res) => {
       count: mapped.length,
       activities: mapped
     });
+
   } catch (error) {
     console.error("BACKEND ERROR:", error);
 
@@ -166,6 +218,7 @@ app.post("/strava/activities", async (req, res) => {
     });
   }
 });
+
 
 app.listen(port, () => {
   console.log(`ACTIVE backend läuft auf Port ${port}`);
